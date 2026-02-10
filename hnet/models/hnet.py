@@ -116,7 +116,7 @@ class HNet(nn.Module):
             )
         else:
             self.pad_dimension = None
-    
+
 
     def _init_weights(self, initializer_range: float = 0.02, parent_residuals: int = 0) -> None:
         n_residuals = parent_residuals
@@ -143,9 +143,9 @@ class HNet(nn.Module):
                         nn.init.normal_(m.weight, mean=0.0, std=initializer_range / (n_residuals ** 0.5))
                     else:
                         nn.init.normal_(m.weight, mean=0.0, std=initializer_range)
-                    
+
             self.main_network._init_weights(initializer_range, n_residuals)
-    
+
 
     def _apply_lr_multiplier(self, lr_multiplier: list[float]) -> None:
         """
@@ -154,7 +154,7 @@ class HNet(nn.Module):
         # a little stupid: we apply lr_multiplier to all parameters, and then for the main stage (which may have another hierarchy), we just apply it again there.
         for param in self.parameters():
             apply_optimization_params(param, lr_multiplier=lr_multiplier[self.stage_idx])
-        
+
         if not self.is_innermost:
             self.main_network._apply_lr_multiplier(lr_multiplier)
 
@@ -208,6 +208,7 @@ class HNet(nn.Module):
         max_seqlen=None,
         mask=None,
         inference_params=None,
+        probe=None,
         **mixer_kwargs,
     ):
         assert mask is not None or (
@@ -228,6 +229,7 @@ class HNet(nn.Module):
             hidden_states = torch.cat(
                 (hidden_states, self.pad_dimension.expand(EARLY_DIMS + (-1,))), dim=-1
             )
+        if probe is not None: probe["hnet:hidden_states_after_padding"] = hidden_states.clone().detach()
 
         if self.is_innermost:
             hidden_states = self.main_network(
@@ -239,6 +241,7 @@ class HNet(nn.Module):
                 **mixer_kwargs,
             )
             hidden_states = hidden_states[..., :D]
+            if probe is not None: probe["hnet:hidden_states_after_main_network"] = hidden_states.clone().detach()
             return hidden_states, []
 
         hidden_states = self.encoder(
@@ -249,12 +252,13 @@ class HNet(nn.Module):
             inference_params=inference_params.encoder_state,
             **mixer_kwargs,
         )
+        if probe is not None: probe["hnet:hidden_states_after_encoder"] = hidden_states.clone().detach()
 
         hidden_states_for_residual = hidden_states.to(
             dtype=self.residual_proj.weight.dtype
         )
         residual = self.residual_proj(hidden_states_for_residual)
-
+        if probe is not None: probe["hnet:residual"] = residual.clone().detach()
         bpred_output = self.routing_module(
             hidden_states,
             cu_seqlens=cu_seqlens,
@@ -264,6 +268,7 @@ class HNet(nn.Module):
         hidden_states, next_cu_seqlens, next_max_seqlen, next_mask = self.chunk_layer(
             hidden_states, bpred_output.boundary_mask, cu_seqlens, mask=mask
         )
+        if probe is not None: probe["hnet:hidden_states_after_chunk"] = hidden_states.clone().detach()
 
         hidden_states, prev_boundary_predictions = self.main_network(
             hidden_states,
@@ -273,6 +278,7 @@ class HNet(nn.Module):
             inference_params=inference_params.main_network_state,
             **mixer_kwargs,
         )
+        if probe is not None: probe["hnet:hidden_states_after_main_network"] = hidden_states.clone().detach()
 
         hidden_states = self.dechunk_layer(
             hidden_states,
@@ -282,10 +288,12 @@ class HNet(nn.Module):
             mask=mask,
             inference_params=inference_params.dechunk_state,
         )
+        if probe is not None: probe["hnet:hidden_states_after_dechunk"] = hidden_states.clone().detach()
 
         hidden_states = self.residual_func(
             hidden_states.to(dtype=residual.dtype), residual, bpred_output.selected_probs
         ).to(hidden_states.dtype)
+        if probe is not None: probe["hnet:hidden_states_after_residual"] = hidden_states.clone().detach()
 
         hidden_states = self.decoder(
             hidden_states,
@@ -295,6 +303,7 @@ class HNet(nn.Module):
             inference_params=inference_params.decoder_state,
             **mixer_kwargs,
         )
+        if probe is not None: probe["hnet:hidden_states_after_decoder"] = hidden_states.clone().detach()
 
         hidden_states = hidden_states[..., :D]
         return hidden_states, [bpred_output, *prev_boundary_predictions]

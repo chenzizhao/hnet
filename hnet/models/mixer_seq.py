@@ -51,7 +51,7 @@ class HNetForCausalLM(nn.Module, GenerationMixin):
     def tie_weights(self):
         if self.config.tie_embeddings:
             self.lm_head.weight = self.embeddings.weight
-    
+
     def init_weights(self, initializer_range: float = 0.02) -> None:
         """
         Initializes the weights of the model.
@@ -87,12 +87,14 @@ class HNetForCausalLM(nn.Module, GenerationMixin):
         position_ids=None,
         inference_params=None,
         num_last_tokens=0,
+        probe=None,
         **mixer_kwargs,
     ):
         """
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
         hidden_states = self.embeddings(input_ids)
+        if probe is not None: probe["embeddings"] = hidden_states.clone().detach()
 
         B, L, D = hidden_states.shape
 
@@ -118,14 +120,17 @@ class HNetForCausalLM(nn.Module, GenerationMixin):
             max_seqlen=max_seqlen,
             mask=mask,
             inference_params=inference_params,
+            probe=probe,
             **mixer_kwargs,
         )
 
         hidden_states = hidden_states.view(B, L, D)
+        if probe is not None: probe["backbone_output"] = hidden_states.clone().detach()
 
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         lm_logits = self.lm_head(hidden_states)
+        if probe is not None: probe["lm_logits"] = lm_logits.clone().detach()
 
         CausalLMOutput = namedtuple(
             "CausalLMOutput", ["logits", "bpred_output", "inference_params"]
