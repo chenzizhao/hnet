@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 
 class ByteTokenizer:
@@ -28,4 +29,9 @@ class ByteTokenizer:
         if isinstance(tokens, np.ndarray):
             tokens = tokens.tolist()
         return bytearray(tokens).decode("utf-8", **kwargs)
+    
+    def convert_ids_to_bytes(self, tokens):
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.detach().cpu().tolist()
+        return [bytes([el]) for el in tokens]
 
